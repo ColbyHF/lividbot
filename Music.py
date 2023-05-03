@@ -7,6 +7,12 @@ import youtube_dl
 
 logging.basicConfig(level=logging.INFO)
 
+
+#
+# This is a very simple music bot. Basic neccessities, skip song, queue, play, next song, etc..
+#
+
+
 class Music(commands.Cog):
     def __init__(self, client):
         self.client = client
@@ -36,7 +42,7 @@ class Music(commands.Cog):
             await ctx.send("The queue is empty.")
 
     @commands.command(aliases=['j', 'jo'], help='Joins the voice channel')
-    async def join(self, ctx):
+    async def join(self, ctx): #Joins the requesters voice channel.
         if not ctx.author.voice:
             await ctx.send("You are not connected to a voice channel.")
             return
@@ -50,7 +56,7 @@ class Music(commands.Cog):
         await ctx.guild.change_voice_state(channel=ctx.author.voice.channel, self_deaf=True)
 
     @commands.command(aliases=['pl', 'p'], help='Plays a song')
-    async def play(self, ctx, *, searchword):
+    async def play(self, ctx, *, searchword): #Plays the song that was inputted.
         async with ctx.typing():
             try:
                 if searchword[0:4] != "http" and searchword[0:3] != "www":
@@ -75,7 +81,7 @@ class Music(commands.Cog):
                 await ctx.send("Sorry, I could not play that song. Please check the URL or try another song.")
 
     @commands.command(aliases=['sk', 's'], help='Skips the current song')
-    async def skip(self, ctx):
+    async def skip(self, ctx): #Skips the current song.
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
             await self.play_next_song(ctx)
@@ -94,7 +100,7 @@ class Music(commands.Cog):
         await ctx.send(f'Current queue:\n{queue_list}')
 
     @commands.command(aliases=['next', 'n'], help='Plays the next song in queue')
-    async def next_song(self, ctx):
+    async def next_song(self, ctx): #Plays the next song in queue.
         if len(self.song_queue) > 0:
             url = self.song_queue[0]['url']
             title = self.song_queue[0]['title']
@@ -106,7 +112,7 @@ class Music(commands.Cog):
             await ctx.send('The queue is currently empty.')
 
     @commands.command(aliases=['add', 'a'], help='Adds a song to the queue')
-    async def add_song(self, ctx, *, searchword):
+    async def add_song(self, ctx, *, searchword): #Adds a song but can you can use the play command to add also.
         async with ctx.typing():
             try:
                 if searchword[0:4] != "http" and searchword[0:3] != "www":
@@ -128,7 +134,7 @@ class Music(commands.Cog):
                 await ctx.send("Sorry, I could not add that song. Please check the URL or try another song.")
 
     @commands.command(aliases=['die', 'dc', 'disconnect'], help='Stops playing and clears the queue')
-    async def stop(self, ctx):
+    async def stop(self, ctx): #disconnects the bot.
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             self.song_queue.clear()
