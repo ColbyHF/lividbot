@@ -3,20 +3,19 @@ from discord.ext import commands
 import logging
 import asyncio
 import yt_dlp
-import youtube_dl
 
 logging.basicConfig(level=logging.INFO)
 
-
 #
-# This is a very simple music bot. Basic neccessities, skip song, queue, play, next song, etc..
+# Basic music bot. Functions properly and works
 #
-
 
 class Music(commands.Cog):
     def __init__(self, client):
         self.client = client
-        self.song_queue = []
+        self.queue = []
+        self.is_first_song = True
+        self.is_playing = False
         self.YDL_OPTIONS = {
             'format': 'bestaudio/best',
             'noplaylist': True,
@@ -32,17 +31,27 @@ class Music(commands.Cog):
         }
 
     async def play_next_song(self, ctx):
-        if len(self.song_queue) > 0:
-            song = self.song_queue.pop(0)
-            logging.info(f"Playing song: {song['title']}")
-            ctx.voice_client.play(discord.FFmpegPCMAudio(song['url'], **self.FFMPEG_OPTIONS))
-            await asyncio.sleep(1)
-            await ctx.send(f'Now playing: {song["title"]}')
-        else:
-            await ctx.send("The queue is empty.")
+        if not self.queue:
+            self.is_playing = False
+            return
+
+        # check if a song is already playing
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+
+        song = self.queue.pop(0)
+        self.current_song = song
+
+        ctx.voice_client.play(
+            discord.FFmpegPCMAudio(song['url'], **self.FFMPEG_OPTIONS),
+            after=lambda e: asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.client.loop).result()
+        )
+        await ctx.guild.change_voice_state(channel=ctx.author.voice.channel, self_deaf=True)
+        embed = discord.Embed(title="Now Playing", description=song["title"], color=0x00ff00)
+        await ctx.send(embed=embed)
 
     @commands.command(aliases=['j', 'jo'], help='Joins the voice channel')
-    async def join(self, ctx): #Joins the requesters voice channel.
+    async def join(self, ctx):
         if not ctx.author.voice:
             await ctx.send("You are not connected to a voice channel.")
             return
@@ -56,8 +65,18 @@ class Music(commands.Cog):
         await ctx.guild.change_voice_state(channel=ctx.author.voice.channel, self_deaf=True)
 
     @commands.command(aliases=['pl', 'p'], help='Plays a song')
-    async def play(self, ctx, *, searchword): #Plays the song that was inputted.
+    async def play(self, ctx, *, searchword):
         async with ctx.typing():
+            # check if user is in a voice channel, and join the channel if not
+            if not ctx.author.voice:
+                return await ctx.send("You are not connected to a voice channel.")
+            voice_channel = ctx.author.voice.channel
+            if not ctx.voice_client:
+                await voice_channel.connect()
+                await ctx.guild.change_voice_state(channel=ctx.author.voice.channel, self_deaf=True)
+            else:
+                await ctx.voice_client.move_to(voice_channel)
+
             try:
                 if searchword[0:4] != "http" and searchword[0:3] != "www":
                     with yt_dlp.YoutubeDL(self.YDL_OPTIONS) as ydl:
@@ -70,41 +89,58 @@ class Music(commands.Cog):
                         info = ydl.extract_info(url, download=False)
                         title = info['title']
 
-                self.song_queue.append({'title': title, 'url': url})
-
-                if not ctx.voice_client.is_playing():
-                    await self.play_next_song(ctx)
+                if ctx.voice_client.is_playing() or self.is_playing:
+                    self.queue.append({'title': title, 'url': url})
+                    embed = discord.Embed(title="Added to Queue", description=title, color=0xff0000)
+                    await ctx.send(embed=embed)
                 else:
-                    await ctx.send(f'Added to queue: {title}')
+                    self.is_playing = True
+                    ctx.voice_client.play(discord.FFmpegPCMAudio(url, **self.FFMPEG_OPTIONS), after=lambda e: asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.client.loop).result())
+                    embed = discord.Embed(title="Now Playing", description=title, color=0x00ff00)
+                    await ctx.send(embed=embed)
+
+                    # Remove the current song from the queue after it's finished playing
+                    def after_playing(error):
+                      self.is_playing = False
+                      asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.client.loop).result()
+                    
+                    ctx.voice_client.source = discord.PCMVolumeTransformer(ctx.voice_client.source)
+                    ctx.voice_client.source.volume = 1
+                    ctx.voice_client.source.after = after_playing
+
             except Exception as e:
-                logging.error(e)
-                await ctx.send("Sorry, I could not play that song. Please check the URL or try another song.")
+                    logging.error(e)
+                    await ctx.send("Sorry, I could not play that song. Please check the URL or try another song.")
 
-    @commands.command(aliases=['sk', 's'], help='Skips the current song')
-    async def skip(self, ctx): #Skips the current song.
-        if ctx.voice_client.is_playing():
-            ctx.voice_client.stop()
-            await self.play_next_song(ctx)
-        else:
-            await ctx.send("I am not playing any music.")
+    @commands.command(aliases=['s','sk'], help='Skips the current song')
+    async def skip(self, ctx):
+        voice_client = ctx.voice_client
+        if not voice_client or not voice_client.is_playing():
+            await ctx.send("I am not currently playing any song.")
+            return
+        voice_client.stop()
+        await voice_client.on_track_end.wait()  # wait for the current song to end
+        await ctx.guild.change_voice_state(channel=ctx.author.voice.channel, self_deaf=True)
+        await self.play_next_song(ctx)
+        await ctx.send("Skipped the current song!")
 
-    @commands.command(aliases=['queue', 'q'], help='Shows the current queue')
-    async def show_queue(self, ctx):
-        if not self.song_queue:
-            return await ctx.send('The queue is currently empty.')
+    @commands.command(name='queue', aliases=['q'])
+    async def queue(self, ctx):
+        if not self.queue:
+            await ctx.send("There are no songs in the queue.")
+            return
 
-        queue_list = ''
-        for i, song in enumerate(self.song_queue, 1):
-            queue_list += f'{i}. {song["title"]}\n'
+        queue_list = '\n'.join([f"{i + 1}. {song['title']}" for i, song in enumerate(self.queue)])
 
-        await ctx.send(f'Current queue:\n{queue_list}')
+        embed = discord.Embed(title="Queue", description=queue_list, color=discord.Color.blue())
+        await ctx.send(embed=embed)
 
     @commands.command(aliases=['next', 'n'], help='Plays the next song in queue')
-    async def next_song(self, ctx): #Plays the next song in queue.
-        if len(self.song_queue) > 0:
-            url = self.song_queue[0]['url']
-            title = self.song_queue[0]['title']
-            del self.song_queue[0]
+    async def next_song(self, ctx):
+        if len(self.queue) > 0:
+            url = self.queue[0]['url']
+            title = self.queue[0]['title']
+            del self.queue[0]
             ctx.voice_client.play(discord.FFmpegPCMAudio(url, **self.FFMPEG_OPTIONS))
             await asyncio.sleep(3)
             await ctx.send(f'Now playing: {title}')
@@ -112,7 +148,7 @@ class Music(commands.Cog):
             await ctx.send('The queue is currently empty.')
 
     @commands.command(aliases=['add', 'a'], help='Adds a song to the queue')
-    async def add_song(self, ctx, *, searchword): #Adds a song but can you can use the play command to add also.
+    async def add_song(self, ctx, *, searchword):
         async with ctx.typing():
             try:
                 if searchword[0:4] != "http" and searchword[0:3] != "www":
@@ -126,7 +162,7 @@ class Music(commands.Cog):
                         info = ydl.extract_info(url, download=False)
                         title = info['title']
 
-                self.song_queue.append({'title': title, 'url': url})
+                self.queue.append({'title': title, 'url': url})
                 logging.info(f"Added song to queue: {title}")
                 await ctx.send(f'Added to queue: {title}')
             except Exception as e:
@@ -134,10 +170,10 @@ class Music(commands.Cog):
                 await ctx.send("Sorry, I could not add that song. Please check the URL or try another song.")
 
     @commands.command(aliases=['die', 'dc', 'disconnect'], help='Stops playing and clears the queue')
-    async def stop(self, ctx): #disconnects the bot.
+    async def stop(self, ctx):
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
-            self.song_queue.clear()
+            self.queue.clear()
         else:
             await ctx.send("I am not connected to a voice channel.")
             await ctx.send("I've disconnected from the voice channel.")
